@@ -1,53 +1,138 @@
-// Keyboard and pointer input. Held keys give a steering direction; one-shot presses (start or
-// restart, pause) are queued as bit flags and taken once by the loop, so a press between two
-// frames is never lost and never counted twice.
-
-export const ACTION_CONFIRM = 1;
-export const ACTION_PAUSE = 2;
-
-const LEFT = new Set(['ArrowLeft', 'KeyA']);
-const RIGHT = new Set(['ArrowRight', 'KeyD']);
-const CONFIRM = new Set(['Space', 'Enter']);
-const PAUSE = new Set(['KeyP', 'Escape']);
-
-export function createInput(target) {
-  let left = false;
-  let right = false;
-  let actions = 0;
-
-  window.addEventListener('keydown', (event) => {
-    if (LEFT.has(event.code)) left = true;
-    else if (RIGHT.has(event.code)) right = true;
-    else if (CONFIRM.has(event.code)) {
-      if (!event.repeat) actions |= ACTION_CONFIRM;
-    } else if (PAUSE.has(event.code)) {
-      if (!event.repeat) actions |= ACTION_PAUSE;
-    } else return;
-    event.preventDefault();
-  });
-  window.addEventListener('keyup', (event) => {
-    if (LEFT.has(event.code)) left = false;
-    else if (RIGHT.has(event.code)) right = false;
-  });
-  // A key released while the tab is hidden never sends keyup: let go of everything on blur.
-  window.addEventListener('blur', () => {
-    left = false;
-    right = false;
-  });
-  target.addEventListener('pointerdown', () => {
-    actions |= ACTION_CONFIRM;
-  });
-
-  return {
-    /** -1 for left, 1 for right, 0 for neither or both. */
-    direction() {
-      return (right ? 1 : 0) - (left ? 1 : 0);
-    },
-    /** The one-shot presses since the last call, as ACTION_* flags. */
-    takeActions() {
-      const taken = actions;
-      actions = 0;
-      return taken;
-    },
-  };
+export class Input {
+  constructor() {
+    this.keys = new Set();
+    this.pressed = new Set();
+    this.mouseDX = 0; this.mouseDY = 0;
+    this.mouseDown = false; this.mouseClicked = false;
+    this.mouseHeld = false;
+    this.locked = false;
+    this.wheel = 0;
+    this.touchMode = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+    this.stick = { x: 0, y: 0, active: false };
+    if (this.touchMode) this.bindTouch();
+    this._onKeyDown = (e) => {
+      if (e.repeat) return;
+      this.keys.add(e.code);
+      this.pressed.add(e.code);
+      if (e.code === 'Space') e.preventDefault();
+    };
+    this._onKeyUp = (e) => this.keys.delete(e.code);
+    this._onMouseMove = (e) => {
+      if (this.locked) { this.mouseDX += e.movementX; this.mouseDY += e.movementY; }
+    };
+    this._onMouseDown = (e) => {
+      if (e.button === 0) { this.mouseDown = true; this.mouseHeld = true; this.mouseClicked = true; }
+    };
+    this._onMouseUp = (e) => { if (e.button === 0) { this.mouseDown = false; this.mouseHeld = false; } };
+    this._onWheel = (e) => { this.wheel += Math.sign(e.deltaY); };
+    this._onLock = () => { this.locked = document.pointerLockElement != null; };
+    this._onBlur = () => { this.keys.clear(); this.mouseHeld = false; };
+    window.addEventListener('keydown', this._onKeyDown);
+    window.addEventListener('keyup', this._onKeyUp);
+    window.addEventListener('mousemove', this._onMouseMove);
+    window.addEventListener('mousedown', this._onMouseDown);
+    window.addEventListener('mouseup', this._onMouseUp);
+    window.addEventListener('wheel', this._onWheel);
+    document.addEventListener('pointerlockchange', this._onLock);
+    window.addEventListener('blur', this._onBlur);
+  }
+  key(code) { return this.keys.has(code); }
+  hit(code) { return this.pressed.has(code); }
+  axis(neg, pos) { return (this.keys.has(pos) ? 1 : 0) - (this.keys.has(neg) ? 1 : 0); }
+  moveVec() {
+    if (this.stick.active && Math.hypot(this.stick.x, this.stick.y) > 0.15) {
+      const len = Math.hypot(this.stick.x, this.stick.y) || 1;
+      return { x: this.stick.x / len, y: -this.stick.y / len };
+    }
+    const x = this.axis('KeyA', 'KeyD');
+    const y = this.axis('KeyS', 'KeyW');
+    const len = Math.hypot(x, y) || 1;
+    return { x: x / len, y: y / len };
+  }
+  lockPointer(el) { if (!this.locked && !this.touchMode) el.requestPointerLock?.(); }
+  bindTouch() {
+    const ui = document.createElement('div');
+    ui.id = 'touch-ui';
+    ui.innerHTML = `
+      <div id="lookzone"></div>
+      <div id="stick"><div id="knob"></div></div>
+      <div id="tbtns">
+        <button data-k="fire">FIRE</button>
+        <button data-k="jump">JUMP</button>
+        <button data-k="enter">ENTER</button>
+        <button data-k="use">USE</button>
+      </div>
+      <div id="tbtns2">
+        <button data-k="pause">II</button>
+        <button data-k="map">MAP</button>
+      </div>`;
+    document.body.appendChild(ui);
+    const stickEl = ui.querySelector('#stick');
+    const knob = ui.querySelector('#knob');
+    let stickId = null, lookId = null, lookLX = 0, lookLY = 0;
+    const stickC = () => { const r = stickEl.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; };
+    const onStick = (t) => {
+      const c = stickC();
+      let dx = (t.clientX - c.x) / 44, dy = (t.clientY - c.y) / 44;
+      const l = Math.hypot(dx, dy);
+      if (l > 1) { dx /= l; dy /= l; }
+      this.stick.x = dx; this.stick.y = dy; this.stick.active = true;
+      knob.style.transform = `translate(${dx * 34}px,${dy * 34}px)`;
+    };
+    stickEl.addEventListener('touchstart', (e) => { e.preventDefault(); stickId = e.changedTouches[0].identifier; onStick(e.changedTouches[0]); }, { passive: false });
+    stickEl.addEventListener('touchmove', (e) => { e.preventDefault(); for (const t of e.changedTouches) if (t.identifier === stickId) onStick(t); }, { passive: false });
+    const stickEnd = (e) => { for (const t of e.changedTouches) if (t.identifier === stickId) { stickId = null; this.stick.x = 0; this.stick.y = 0; this.stick.active = false; knob.style.transform = 'translate(0,0)'; } };
+    stickEl.addEventListener('touchend', stickEnd);
+    stickEl.addEventListener('touchcancel', stickEnd);
+    const look = ui.querySelector('#lookzone');
+    look.addEventListener('touchstart', (e) => { e.preventDefault(); const t = e.changedTouches[0]; lookId = t.identifier; lookLX = t.clientX; lookLY = t.clientY; }, { passive: false });
+    look.addEventListener('touchmove', (e) => {
+      e.preventDefault();
+      for (const t of e.changedTouches) if (t.identifier === lookId) {
+        this.mouseDX += (t.clientX - lookLX) * 2.2;
+        this.mouseDY += (t.clientY - lookLY) * 2.2;
+        lookLX = t.clientX; lookLY = t.clientY;
+      }
+    }, { passive: false });
+    look.addEventListener('touchend', (e) => { for (const t of e.changedTouches) if (t.identifier === lookId) lookId = null; });
+    ui.querySelectorAll('#tbtns button, #tbtns2 button').forEach((b) => {
+      const k = b.dataset.k;
+      const down = (e) => {
+        e.preventDefault();
+        b.classList.add('on');
+        if (k === 'fire') { this.mouseDown = true; this.mouseHeld = true; this.mouseClicked = true; }
+        else if (k === 'jump') this.keys.add('Space');
+        else if (k === 'enter') this.pressed.add('KeyF');
+        else if (k === 'use') this.pressed.add('KeyE');
+        else if (k === 'pause') this.pressed.add('Escape');
+        else if (k === 'map') this.pressed.add('KeyM');
+      };
+      const up = (e) => {
+        e.preventDefault();
+        b.classList.remove('on');
+        if (k === 'fire') { this.mouseDown = false; this.mouseHeld = false; }
+        else if (k === 'jump') this.keys.delete('Space');
+      };
+      b.addEventListener('touchstart', down, { passive: false });
+      b.addEventListener('touchend', up, { passive: false });
+      b.addEventListener('touchcancel', up, { passive: false });
+    });
+  }
+  unlockPointer() { if (this.locked) document.exitPointerLock?.(); }
+  endFrame() {
+    this.pressed.clear();
+    this.mouseDX = 0; this.mouseDY = 0;
+    this.mouseClicked = false;
+    this.wheel = 0;
+  }
+  dispose() {
+    window.removeEventListener('keydown', this._onKeyDown);
+    window.removeEventListener('keyup', this._onKeyUp);
+    window.removeEventListener('mousemove', this._onMouseMove);
+    window.removeEventListener('mousedown', this._onMouseDown);
+    window.removeEventListener('mouseup', this._onMouseUp);
+    window.removeEventListener('wheel', this._onWheel);
+    document.removeEventListener('pointerlockchange', this._onLock);
+    window.removeEventListener('blur', this._onBlur);
+  }
 }

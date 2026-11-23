@@ -1,0 +1,31 @@
+import { CREW } from './config.js';
+
+export class CrewSys {
+  constructor() {
+    this.unlocked = ['lena']; // Lena joins in mission 1's intro in practice; see missions
+    this.unlocked = [];
+    this.active = null;
+  }
+  unlock(crew, game) {
+    if (this.unlocked.includes(crew.id)) return;
+    this.unlocked.push(crew.id);
+    if (!this.active) this.setActive(crew.id, game);
+  }
+  setActive(id, game) {
+    if (!this.unlocked.includes(id)) return false;
+    this.active = id;
+    this.applyAll(game);
+    return true;
+  }
+  applyAll(game) {
+    game.wantedGainMul = 1; game.scanner = false;
+    game.autoRepair = false; game.repairMul = 1;
+    game.nitroMul = 1; game.coolMul = 1;
+    for (const id of this.unlocked) {
+      const c = CREW.find((x) => x.id === id);
+      if (c) c.apply(game);
+    }
+  }
+  activeCrew() { return CREW.find((c) => c.id === this.active) || null; }
+  list() { return CREW.map((c) => ({ ...c, unlocked: this.unlocked.includes(c.id), active: this.active === c.id })); }
+}

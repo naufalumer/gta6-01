@@ -1,0 +1,70 @@
+import { SAVE_KEY, DISTRICTS, districtAt } from './config.js';
+
+export class Economy {
+  constructor() {
+    this.standing = {}; // district id -> 0..100
+    for (const d of DISTRICTS) this.standing[d.id] = d.stand;
+    this.stats = {
+      carsStolen: 0, starsLost: 0, knockouts: 0, racesWon: 0,
+      bestLap: null, kmDriven: 0, fishCaught: 0, buckets: 0,
+      missionsDone: 0, cashEarned: 0,
+    };
+    this.crewUnlocked = [];
+  }
+  standingFor(player) {
+    const d = districtAt(player.x, player.z);
+    return this.standing[d.id] || 0;
+  }
+  addStanding(player, n) {
+    const d = districtAt(player.x, player.z);
+    this.standing[d.id] = Math.min(100, (this.standing[d.id] || 0) + n);
+  }
+  unlockCrew(crew) {
+    if (!this.crewUnlocked.includes(crew.id)) this.crewUnlocked.push(crew.id);
+  }
+  save(player, game) {
+    try {
+      const data = {
+        cash: player.cash, rep: player.rep, health: player.health, armor: player.armor,
+        x: player.x, z: player.z,
+        weapons: Object.keys(player.ammo || {}).filter((k) => (player.ammo[k] || 0) > 0 || player.weapon === k),
+        ammo: player.ammo, mag: player.mag,
+        upgrades: player.upgrades || {},
+        missionIdx: game.missions.idx,
+        standing: this.standing, stats: this.stats,
+        crewUnlocked: this.crewUnlocked, crewActive: game.crew.active,
+        hour: game.time.hour,
+      };
+      localStorage.setItem(SAVE_KEY, JSON.stringify(data));
+      return true;
+    } catch (e) { return false; }
+  }
+  load() {
+    try {
+      const raw = localStorage.getItem(SAVE_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) { return null; }
+  }
+  hasSave() { return !!this.load(); }
+  applySave(player, game, data) {
+    player.cash = data.cash ?? player.cash;
+    player.rep = data.rep ?? 0;
+    player.health = data.health ?? 100;
+    player.armor = data.armor ?? 0;
+    if (typeof data.x === 'number') { player.x = data.x; player.z = data.z; }
+    if (data.ammo) player.ammo = data.ammo;
+    if (data.mag) player.mag = data.mag;
+    if (data.upgrades) player.upgrades = data.upgrades;
+    if (data.standing) this.standing = data.standing;
+    if (data.stats) this.stats = { ...this.stats, ...data.stats };
+    if (data.crewUnlocked) this.crewUnlocked = data.crewUnlocked;
+    game.missions.idx = data.missionIdx ?? 0;
+    if (data.hour !== undefined) game.time.setHour(data.hour);
+    for (const id of this.crewUnlocked) {
+      const c = { id };
+      game.crew.unlocked.push(id);
+    }
+    if (data.crewActive) game.crew.active = data.crewActive;
+    game.crew.applyAll(game);
+  }
+}
